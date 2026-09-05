@@ -1,5 +1,5 @@
 {
-  "name": "Kollektiva AI Teacher",
+  "name": "EchoMind",
   "description": "Interactive AI Educator that teaches through video, personalized lessons, visual demonstrations, real-time voice, and adaptive misconception detection.",
   "requestFramePermissions": [
     "microphone"

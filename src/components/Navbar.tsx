@@ -69,7 +69,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-sm tracking-tight text-white">KOLLEKTIVA</span>
+                <span className="font-semibold text-sm tracking-tight text-white">ECHOMIND</span>
                 <span className="hidden sm:inline-block text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-white/10 text-emerald-400 border border-white/10">
                   AI Teacher
                 </span>

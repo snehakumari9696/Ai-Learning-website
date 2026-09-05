@@ -78,7 +78,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           <div>
             <span className="text-xs font-mono tracking-wider uppercase text-emerald-400">Authentication Required</span>
             <h2 className="text-xl font-medium tracking-tight text-white">
-              {tab === 'signin' ? 'Sign In to Kollektiva' : 'Create Student Account'}
+              {tab === 'signin' ? 'Sign In to EchoMind' : 'Create Student Account'}
             </h2>
           </div>
         </div>

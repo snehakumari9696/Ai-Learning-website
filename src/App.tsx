@@ -11,6 +11,7 @@ import { LibraryPage } from './components/LibraryPage';
 import { ProfilePage } from './components/ProfilePage';
 import { AuthModal } from './components/AuthModal';
 import { TEACHERS } from './data/teachers';
+import { streamLesson, saveLesson } from './services/api';
 import {
   PageRoute,
   LessonPlan,
@@ -105,61 +106,54 @@ const AppContent: React.FC = () => {
     setActiveLanguage(language);
     setActiveLevel(level);
 
-    try {
-      const res = await fetch('/api/generate-lesson', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic,
-          level,
-          durationMinutes: 20,
-          language,
-          style: 'analogies',
-          teacherName: teacher.name,
-          studentProfile: user
-            ? {
-                name: user.name,
-                level: user.level,
-              }
-            : undefined,
-        }),
-      });
+    const payload = {
+      topic,
+      level,
+      durationMinutes: 20,
+      language,
+      style: 'analogies' as TeachingStyle,
+      teacherName: teacher.name,
+      studentProfile: user
+        ? {
+            name: user.name,
+            level: user.level,
+          }
+        : undefined,
+    };
 
-      const data = await res.json();
-      if (data.lesson) {
-        // Save to library
-        try {
-          const rec: SavedLessonRecord = {
-            id: `less_${Date.now()}`,
-            topic,
-            title: data.lesson.title || topic,
-            teacherName: teacher.name,
-            teacherAvatarUrl: teacher.imageUrl,
-            language,
-            level,
-            date: new Date().toLocaleDateString(),
-            lesson: data.lesson,
-            completed: false,
-          };
-          const existing = JSON.parse(
-            localStorage.getItem('kollektiva_saved_lessons_v1') || '[]'
-          );
-          localStorage.setItem(
-            'kollektiva_saved_lessons_v1',
-            JSON.stringify([rec, ...existing])
-          );
-        } catch (e) {
-          console.warn(e);
+    await streamLesson(
+      payload,
+      (updatedLesson) => {
+        setActiveLesson({ ...updatedLesson });
+      },
+      async (completedLesson) => {
+        if (completedLesson.curriculumModules.length > 0) {
+          if (user) {
+            await saveLesson(
+              {
+                topic,
+                title: completedLesson.title || topic,
+                teacherName: teacher.name,
+                teacherAvatarUrl: teacher.imageUrl,
+                language,
+                level,
+                date: new Date().toLocaleDateString(),
+                lesson: completedLesson,
+                completed: false,
+              },
+              user.id
+            );
+          }
+          setActiveLesson(completedLesson);
+          setCurrentRoute('classroom');
         }
-
-        setActiveLesson(data.lesson);
-        setCurrentRoute('classroom');
+        setIsGenerating(false);
+      },
+      (error) => {
+        console.error('Failed to generate lesson from topic:', error);
+        setIsGenerating(false);
       }
-    } catch (err) {
-      console.error('Failed to generate lesson from topic:', err);
-    } finally {
-      setIsGenerating(false);
-    }
+    );
   };
 
   // Re-open a saved lesson from library
@@ -184,72 +178,67 @@ const AppContent: React.FC = () => {
     format: LessonFormat;
   }) => {
     setIsGenerating(true);
-    try {
-      const res = await fetch('/api/generate-lesson', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: config.topic,
-          materialText: config.materialText,
-          level: config.level,
-          durationMinutes: config.durationMinutes,
-          language: config.language,
-          style: config.style,
-          teacherName: config.teacher.name,
-          studentProfile: user
-            ? {
-                name: user.name,
-                level: user.level,
-                style: config.style,
-              }
-            : undefined,
-        }),
-      });
+    
+    const payload = {
+      topic: config.topic,
+      materialText: config.materialText,
+      level: config.level,
+      durationMinutes: config.durationMinutes,
+      language: config.language,
+      style: config.style,
+      teacherName: config.teacher.name,
+      studentProfile: user
+        ? {
+            name: user.name,
+            level: user.level,
+            style: config.style,
+          }
+        : undefined,
+    };
 
-      const data = await res.json();
-      if (data.lesson) {
-        // Save to library
-        try {
-          const rec: SavedLessonRecord = {
-            id: `less_${Date.now()}`,
-            topic: config.topic,
-            title: data.lesson.title || config.topic,
-            teacherName: config.teacher.name,
-            teacherAvatarUrl: config.teacher.imageUrl,
-            language: config.language,
-            level: config.level,
-            date: new Date().toLocaleDateString(),
-            lesson: data.lesson,
-            completed: false,
-          };
-          const existing = JSON.parse(
-            localStorage.getItem('kollektiva_saved_lessons_v1') || '[]'
-          );
-          localStorage.setItem(
-            'kollektiva_saved_lessons_v1',
-            JSON.stringify([rec, ...existing])
-          );
-        } catch (e) {
-          console.warn(e);
-        }
-
-        setActiveLesson(data.lesson);
+    await streamLesson(
+      payload,
+      (updatedLesson) => {
+        setActiveLesson({ ...updatedLesson });
         setActiveTeacher(config.teacher);
         setActiveLanguage(config.language);
         setActiveLevel(config.level);
         setActiveFormat(config.format);
-        setIsSetupModalOpen(false);
+        // We don't close modal yet to show generating state if desired, or we can close it
+        setIsSetupModalOpen(false); 
         setCurrentRoute('classroom');
+      },
+      async (completedLesson) => {
+        if (completedLesson.curriculumModules.length > 0) {
+          if (user) {
+            await saveLesson(
+              {
+                topic: config.topic,
+                title: completedLesson.title || config.topic,
+                teacherName: config.teacher.name,
+                teacherAvatarUrl: config.teacher.imageUrl,
+                language: config.language,
+                level: config.level,
+                date: new Date().toLocaleDateString(),
+                lesson: completedLesson,
+                completed: false,
+              },
+              user.id
+            );
+          }
+          setActiveLesson(completedLesson);
+        }
+        setIsGenerating(false);
+      },
+      (error) => {
+        console.error('Failed to generate lesson:', error);
+        setIsGenerating(false);
       }
-    } catch (err) {
-      console.error('Failed to generate lesson:', err);
-    } finally {
-      setIsGenerating(false);
-    }
+    );
   };
 
   return (
-    <div className="min-h-screen kollektiva-page-bg text-white selection:bg-emerald-500 selection:text-black">
+    <div className="min-h-screen echomind-page-bg text-white selection:bg-emerald-500 selection:text-black">
       {/* Top Universal Navbar */}
       <Navbar
         currentRoute={currentRoute}

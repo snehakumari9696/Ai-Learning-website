@@ -2,28 +2,31 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { SavedLessonRecord, TeacherAvatar } from '../types';
 import { TEACHERS } from '../data/teachers';
-import { BookOpen, Play, Calendar, Award, Trash2, Globe, Sparkles, ArrowLeft } from 'lucide-react';
+import { BookOpen, Play, Calendar, Award, Trash2, Globe, Sparkles, ArrowLeft, Loader2 } from 'lucide-react';
 import { LiquidGlassButton } from './LiquidGlassButton';
+import { getSavedLessons } from '../services/api';
 
 interface LibraryPageProps {
   onOpenLesson: (saved: SavedLessonRecord) => void;
   onStartNewLesson: () => void;
   onBack?: () => void;
 }
-
-const STORAGE_KEY = 'kollektiva_saved_lessons_v1';
-
 export const LibraryPage: React.FC<LibraryPageProps> = ({ onOpenLesson, onStartNewLesson, onBack }) => {
   const { user } = useAuth();
   const [lessons, setLessons] = useState<SavedLessonRecord[]>([]);
-
+  const [isLoading, setIsLoading] = useState(true);
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        setLessons(JSON.parse(stored));
-      } else {
-        // Initialize with default session record for first-time orientation
+    const fetchLessons = async () => {
+      if (!user) {
+        setLessons([]);
+        setIsLoading(false);
+        return;
+      }
+      setIsLoading(true);
+      const data = await getSavedLessons(user.id);
+      
+      if (data.length === 0) {
+        // Initialize with default session record for first-time orientation just for display
         const initial: SavedLessonRecord[] = [
           {
             id: 'rec-init-1',
@@ -31,7 +34,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({ onOpenLesson, onStartN
             title: "Ohm's Law: Voltage, Current, and Resistance in Action",
             teacherName: 'Elena Baranova',
             teacherAvatarUrl: TEACHERS[0].imageUrl,
-            language: user?.preferredLanguage || 'English',
+            language: user.preferredLanguage || 'English',
             level: 'beginner',
             date: new Date().toLocaleDateString(),
             completed: true,
@@ -53,25 +56,23 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({ onOpenLesson, onStartN
           },
         ];
         setLessons(initial);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+      } else {
+        setLessons(data);
       }
-    } catch (e) {
-      console.warn(e);
-    }
+      setIsLoading(false);
+    };
+
+    fetchLessons();
   }, [user]);
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    // Note: Backend endpoint for delete not implemented yet, so we just remove from UI for now.
     const updated = lessons.filter((l) => l.id !== id);
     setLessons(updated);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    } catch (e) {
-      console.error(e);
-    }
   };
 
   return (
-    <div className="min-h-screen kollektiva-page-bg text-white font-geist pt-24 pb-32 px-4 sm:px-6 lg:px-8 overflow-y-auto selection:bg-emerald-500 selection:text-black">
+    <div className="min-h-screen echomind-page-bg text-white font-geist pt-24 pb-32 px-4 sm:px-6 lg:px-8 overflow-y-auto selection:bg-emerald-500 selection:text-black">
       <div className="max-w-5xl mx-auto space-y-8">
         {/* Back Navigation Action */}
         {onBack && (
@@ -116,7 +117,11 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({ onOpenLesson, onStartN
         </div>
 
         {/* Lesson Cards */}
-        {lessons.length === 0 ? (
+        {isLoading ? (
+          <div className="flex justify-center py-20">
+            <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
+          </div>
+        ) : lessons.length === 0 ? (
           <div className="p-12 text-center rounded-3xl liquid-glass-card border border-white/18 space-y-4 shadow-2xl backdrop-blur-2xl">
             <BookOpen className="w-10 h-10 text-white/30 mx-auto" />
             <h3 className="text-lg font-medium text-white">No lessons in your library yet</h3>

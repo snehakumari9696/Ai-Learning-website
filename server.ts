@@ -1,4 +1,7 @@
 import express from 'express';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -6,9 +9,56 @@ import crypto from 'crypto';
 import { Queue } from 'bullmq';
 import redis from './src/server/redis.js'; // Ensure correct extension for module resolution
 import './src/server/workers/syllabusWorker.js'; // Initialize worker
-import { getGemini, generateWithModelFallback, cleanJsonString, generateFallbackCurriculum } from './src/server/ai.js';
+import { getGemini, generateWithModelFallback, generateStreamWithModelFallback, cleanJsonString, generateFallbackCurriculum } from './src/server/ai.js';
+import { generateTTS } from './src/server/services/tts.js';
 
 dotenv.config();
+
+function extractModulesFromIncompleteJSON(text: string) {
+  const modules: any[] = [];
+  const startIdx = text.indexOf('"curriculumModules"');
+  if (startIdx === -1) return modules;
+  
+  let arrayStart = text.indexOf('[', startIdx);
+  if (arrayStart === -1) return modules;
+  
+  let depth = 0;
+  let objStart = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = arrayStart + 1; i < text.length; i++) {
+    const char = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === '{') {
+        if (depth === 0) objStart = i;
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          const objStr = text.substring(objStart, i + 1);
+          try {
+            modules.push(JSON.parse(objStr));
+          } catch (e) {}
+          objStart = -1;
+        }
+      }
+    }
+  }
+  return modules;
+}
 
 const app = express();
 const PORT = 3000;
@@ -28,8 +78,30 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// 1. Generate Structured Lesson Plan with Visual Demonstration specs
+app.get('/api/audio/:hash', async (req, res) => {
+  const { hash } = req.params;
+  try {
+    const base64Audio = await redis.get(`tts:${hash}`);
+    if (!base64Audio) {
+      return res.status(404).send('Audio not found');
+    }
+    const buffer = Buffer.from(base64Audio, 'base64');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).send('Error retrieving audio');
+  }
+});
+
+// 1. Generate Structured Lesson Plan with Visual Demonstration specs (SSE)
 app.post('/api/generate-lesson', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  
+  // Flush headers so client knows stream started
+  res.flushHeaders?.();
+
   try {
     const {
       topic,
@@ -49,7 +121,7 @@ app.post('/api/generate-lesson', async (req, res) => {
         ? `Student Name: ${studentProfile.name || 'Learner'}, Current Mastery Level: ${studentProfile.level || level}, Weak Concepts to Address: ${(studentProfile.weakConcepts || []).join(', ') || 'None specified'}, Preferred Style: ${studentProfile.style || style}`
         : `Learner Level: ${level}, Preferred Style: ${style}`;
 
-      const prompt = `You are ${teacherName}, an elite personalized AI Educator at Kollektiva teaching an interactive video-based class.
+      const prompt = `You are ${teacherName}, an elite personalized AI Educator at EchoMind teaching an interactive video-based class.
 Personalized Learner Profile:
 ${studentContext}
 - Target Topic: ${topic || 'Understanding Core Concepts'}
@@ -129,7 +201,7 @@ Generate a fully personalized, pedagogical lesson plan formatted strictly as val
 
 Ensure the lesson follows human-like pedagogy: Understand -> Plan -> Explain -> Demonstrate -> Question -> Evaluate -> Adapt. Return ONLY the JSON.`;
 
-      const response = await generateWithModelFallback(ai, {
+      const stream = await generateStreamWithModelFallback(ai, {
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -137,26 +209,66 @@ Ensure the lesson follows human-like pedagogy: Understand -> Plan -> Explain -> 
         },
       });
 
-      const text = cleanJsonString(response.text?.trim() || '{}');
-      const parsed = JSON.parse(text);
-      return res.json({ success: true, lesson: parsed });
+      let fullText = '';
+      const processedModuleIds = new Set<string>();
+
+      for await (const chunk of stream) {
+        fullText += chunk.text;
+        
+        // Extract modules found so far
+        const modules = extractModulesFromIncompleteJSON(fullText);
+        for (const mod of modules) {
+          if (!processedModuleIds.has(mod.id)) {
+            processedModuleIds.add(mod.id);
+            
+            // 1. Check if speechScript exists
+            if (mod.speechScript) {
+              const hash = crypto.createHash('sha256').update(mod.speechScript).digest('hex');
+              // 2. Check redis cache
+              const cached = await redis.get(`tts:${hash}`);
+              if (!cached) {
+                // Generate and cache
+                const audioBuffer = await generateTTS(mod.speechScript, language);
+                if (audioBuffer) {
+                  await redis.set(`tts:${hash}`, audioBuffer.toString('base64'));
+                  mod.audioUrl = `/api/audio/${hash}`;
+                }
+              } else {
+                mod.audioUrl = `/api/audio/${hash}`;
+              }
+            }
+
+            // Emit the module
+            res.write(`data: ${JSON.stringify({ type: 'module', data: mod })}\n\n`);
+          }
+        }
+      }
+
+      // At the end, try parsing the full text to emit the final metadata (title, summary, etc.)
+      try {
+        const parsed = JSON.parse(cleanJsonString(fullText));
+        const metadata = { ...parsed };
+        delete metadata.curriculumModules; // Already sent modules
+        res.write(`data: ${JSON.stringify({ type: 'metadata', data: metadata })}\n\n`);
+      } catch(e) {}
+
+      res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+      return res.end();
     }
 
     // High quality pedagogical fallback if Gemini API is not yet configured
-    return res.json({
-      success: true,
-      fallback: true,
-      lesson: generateFallbackLesson(topic, level, durationMinutes, language, teacherName),
-    });
+    const fallback = generateFallbackLesson(topic, level, durationMinutes, language, teacherName);
+    res.write(`data: ${JSON.stringify({ type: 'fallback', data: fallback })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    return res.end();
   } catch (error: any) {
     console.warn('Gemini lesson generation fallback triggered:', error?.message);
     const { topic, level, durationMinutes, language, teacherName } = req.body;
-    return res.json({
-      success: true,
-      fallback: true,
-      error: error?.message,
-      lesson: generateFallbackLesson(topic, level, durationMinutes, language, teacherName),
-    });
+    const fallback = generateFallbackLesson(topic, level, durationMinutes, language, teacherName);
+    res.write(`data: ${JSON.stringify({ type: 'fallback', data: fallback })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error?.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    return res.end();
   }
 });
 
@@ -175,7 +287,7 @@ app.post('/api/evaluate-answer', async (req, res) => {
     const ai = getGemini();
 
     if (ai) {
-      const prompt = `You are ${teacherName}, an empathetic and insightful AI educator at Kollektiva.
+      const prompt = `You are ${teacherName}, an empathetic and insightful AI educator at EchoMind.
 A student was asked: "${question}"
 Regarding concept: "${concept}"
 The student answered: "${studentAnswer}"
@@ -423,6 +535,127 @@ Return ONLY valid JSON.`;
 // Dynamic curriculum fallback generator supporting multilingual requests
 // Fallback curriculum logic moved to ai.ts
 
+// --- Postgres Database Endpoints ---
+
+app.get('/api/lessons', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ success: false, error: 'userId required' });
+    const dbLessons = await prisma.lesson.findMany({
+      where: { userId: String(userId) },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    // Map db structure to frontend SavedLessonRecord format
+    const lessons = dbLessons.map(dbLesson => {
+      const parsedModules: any = dbLesson.modules || {};
+      return {
+        id: dbLesson.id,
+        topic: dbLesson.topic,
+        title: dbLesson.title,
+        teacherName: parsedModules.teacherName || dbLesson.teacherId,
+        teacherAvatarUrl: parsedModules.teacherAvatarUrl || '',
+        language: dbLesson.language,
+        level: parsedModules.level || 'intermediate',
+        date: dbLesson.createdAt.toLocaleDateString(),
+        completed: parsedModules.completed || false,
+        score: parsedModules.score,
+        lesson: parsedModules.lesson || parsedModules
+      };
+    });
+    
+    res.json({ success: true, lessons });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/lessons', async (req, res) => {
+  try {
+    const { userId, title, topic, subjectCategory, teacherName, language, estimatedMinutes, ...rest } = req.body;
+    if (!userId) return res.status(400).json({ success: false, error: 'userId required' });
+    
+    // Make sure user exists
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          id: userId,
+          email: `${userId}@example.com`,
+          fullName: 'Student',
+          preferredLanguage: language || 'English'
+        }
+      });
+    }
+
+    const savedLesson = await prisma.lesson.create({
+      data: {
+        userId,
+        title: title || rest.lesson?.title || topic || 'Lesson',
+        topic: topic || 'Topic',
+        subjectCategory: subjectCategory || rest.lesson?.subjectCategory || 'general',
+        teacherId: teacherName || 'Elena Baranova',
+        language: language || 'English',
+        estimatedMinutes: estimatedMinutes || rest.lesson?.estimatedTimeMinutes || 20,
+        modules: rest // Store all extra fields like lesson plan, teacherAvatarUrl, level in the JSON blob
+      }
+    });
+    res.json({ success: true, lesson: savedLesson });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/profile', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ success: false, error: 'userId required' });
+    const profile = await prisma.user.findUnique({ where: { id: String(userId) } });
+    if (profile) {
+      res.json({ success: true, profile });
+    } else {
+      res.status(404).json({ success: false, error: 'Profile not found' });
+    }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/profile', async (req, res) => {
+  try {
+    const { userId, ...updates } = req.body;
+    if (!userId) return res.status(400).json({ success: false, error: 'userId required' });
+    
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+       user = await prisma.user.create({
+         data: {
+           id: userId,
+           email: `${userId}@example.com`,
+           fullName: updates.fullName || updates.name || 'Student',
+           ...updates
+         }
+       });
+       return res.json({ success: true, profile: user });
+    }
+
+    const updatedProfile = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        fullName: updates.fullName || updates.name,
+        masteryLevel: updates.masteryLevel || updates.level,
+        preferredLanguage: updates.preferredLanguage,
+        preferredTeacherId: updates.preferredTeacherId
+      }
+    });
+    res.json({ success: true, profile: updatedProfile });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- Fallback Generators ---
+
 // Dynamic practice question fallback generator
 function generateFallbackPractice(
   topic: string = 'Core Principles',
@@ -643,7 +876,7 @@ function generateFallbackLesson(topic: string = 'Ohm\'s Law & Electrical Circuit
           type: 'explain',
           speechScript: isHindi
             ? 'Swagat hai dosto! Aaj hum physics ka ek sabse basic aur powerful law samjhenge: Ohm ka niyam. Voltage ek dhakka hai, jo electrons ko wire ke andar aage badhata hai.'
-            : 'Welcome to Kollektiva Physics! Today we will break down Ohm\'s Law. Think of Voltage as electrical pressure—the force pushing electrons through a conductive pathway.',
+            : 'Welcome to EchoMind Physics! Today we will break down Ohm\'s Law. Think of Voltage as electrical pressure—the force pushing electrons through a conductive pathway.',
           keyTakeaway: 'Voltage (V) = The electric potential difference driving charges.',
           visualType: 'equation',
           visualContent: {
@@ -1019,7 +1252,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Kollektiva AI Teacher server running on http://0.0.0.0:${PORT}`);
+    console.log(`EchoMind server running on http://0.0.0.0:${PORT}`);
   });
 }
 

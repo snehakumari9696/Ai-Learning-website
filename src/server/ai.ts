@@ -123,6 +123,66 @@ export async function generateWithModelFallback(
   throw lastError;
 }
 
+// Streaming equivalent of generateWithModelFallback
+export async function generateStreamWithModelFallback(
+  ai: GoogleGenAI,
+  params: {
+    contents: any;
+    config?: any;
+  }
+) {
+  let lastError: any = null;
+
+  const orderedModels = [
+    ...CANDIDATE_MODELS.filter(isModelHealthy),
+    ...CANDIDATE_MODELS.filter((m) => !isModelHealthy(m)),
+  ];
+
+  for (const model of orderedModels) {
+    if (!isModelHealthy(model) && orderedModels.some(isModelHealthy)) {
+      continue;
+    }
+
+    try {
+      const stream = await ai.models.generateContentStream({
+        model,
+        contents: params.contents,
+        config: params.config,
+      });
+      return stream;
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message || '');
+
+      const isQuotaExhausted =
+        msg.includes('429') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('quota');
+
+      const isHighDemand =
+        msg.includes('503') ||
+        msg.includes('UNAVAILABLE') ||
+        msg.includes('high demand');
+
+      if (isQuotaExhausted) {
+        setModelCooldown(model, 180000);
+        console.info(`[Gemini API] ${model} quota reached. Cascading (Stream)...`);
+        continue;
+      }
+
+      if (isHighDemand) {
+        setModelCooldown(model, 45000);
+        console.info(`[Gemini API] ${model} high demand (503). Cascading (Stream)...`);
+        continue;
+      }
+
+      console.warn(`[Gemini API] ${model} error (${msg.slice(0, 80)}). Cascading (Stream)...`);
+    }
+  }
+
+  throw lastError;
+}
+
 export function generateFallbackCurriculum(
   subjectGoal: string = 'Mastery Path',
   level: string = 'intermediate',

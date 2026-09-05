@@ -124,7 +124,7 @@ body {
 }
 
 /* Atmospheric page canvas matching the landing page theme */
-.kollektiva-page-bg {
+.echomind-page-bg {
   background-color: #020617;
   background-image: 
     radial-gradient(at 0% 0%, rgba(16, 185, 129, 0.12) 0px, transparent 55%),

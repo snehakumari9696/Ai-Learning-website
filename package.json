@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "postinstall": "prisma skills sync || exit 0"
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -19,6 +19,7 @@
     "bullmq": "^6.3.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "google-tts-api": "^2.0.2",
     "ioredis": "^6.0.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",

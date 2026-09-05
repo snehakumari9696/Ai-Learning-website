@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserSession, LearnerLevel } from '../types';
+import { getProfile, updateProfile as updateProfileApi } from '../services/api';
 
 interface AuthContextType {
   user: UserSession | null;
@@ -15,7 +16,7 @@ interface AuthContextType {
   clearPendingRedirect: () => void;
 }
 
-const STORAGE_KEY = 'kollektiva_user_session_v1';
+const STORAGE_KEY = 'echomind_user_session_v1';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -24,16 +25,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [pendingRedirect, setPendingRedirect] = useState<string | null>(null);
 
-  // Initialize session from localStorage
+  // Initialize session from localStorage and sync with backend
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        setUser(JSON.parse(stored));
+    const initSession = async () => {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsedSession = JSON.parse(stored);
+          setUser(parsedSession);
+
+          // If not guest, fetch latest from DB
+          if (!parsedSession.isGuest) {
+            const dbProfile = await getProfile(parsedSession.id);
+            if (dbProfile) {
+              const updatedSession = {
+                ...parsedSession,
+                name: dbProfile.fullName || parsedSession.name,
+                level: dbProfile.masteryLevel || parsedSession.level,
+                preferredLanguage: dbProfile.preferredLanguage || parsedSession.preferredLanguage,
+                preferredTeacherId: dbProfile.preferredTeacherId || parsedSession.preferredTeacherId,
+              };
+              setUser(updatedSession);
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSession));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Could not read user session from storage', err);
       }
-    } catch (err) {
-      console.warn('Could not read user session from storage', err);
-    }
+    };
+    initSession();
   }, []);
 
   const login = (
@@ -53,12 +74,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isGuest: false,
       createdAt: new Date().toISOString(),
     };
-    setUser(session);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-    } catch (err) {
-      console.error(err);
-    }
+    
+    // Also save this user to Postgres
+    updateProfileApi(session.id, {
+      name: session.name,
+      email: session.email,
+      level: session.level,
+      preferredLanguage: session.preferredLanguage,
+      preferredTeacherId: session.preferredTeacherId
+    }).then(() => {
+      setUser(session);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+      } catch (err) {
+        console.error(err);
+      }
+    }).catch(console.error);
+    
     setIsAuthModalOpen(false);
   };
 
@@ -66,7 +98,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const session: UserSession = {
       id: `guest_${Date.now()}`,
       name: 'Guest Scholar',
-      email: 'scholar@kollektiva.ai',
+      email: 'scholar@echomind.ai',
       level: 'intermediate',
       primarySubject: 'Physics & Applied Mathematics',
       preferredLanguage: 'English',

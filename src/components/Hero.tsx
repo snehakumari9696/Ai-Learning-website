@@ -6,6 +6,7 @@ import { VideoPlayerStage } from './VideoPlayerStage';
 import { AssessmentReportModal } from './AssessmentReportModal';
 import { LiquidGlassButton } from './LiquidGlassButton';
 import { useAuth } from '../context/AuthContext';
+import { streamLesson, saveLesson } from '../services/api';
 import {
   DurationOption,
   LearnerLevel,
@@ -71,73 +72,67 @@ export const Hero: React.FC<HeroProps> = ({ onStartLessonGlobal }) => {
       setActiveIndex(matchedIdx);
     }
 
-    try {
-      const res = await fetch('/api/generate-lesson', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          topic: config.topic,
-          materialText: config.materialText,
-          level: config.level,
-          durationMinutes: config.durationMinutes,
-          language: config.language,
-          style: config.style,
-          teacherName: config.teacher.name,
-          studentProfile: user
-            ? {
-                name: user.name,
-                level: user.level,
-                style: config.style,
-              }
-            : undefined,
-        }),
-      });
+    const payload = {
+      topic: config.topic,
+      materialText: config.materialText,
+      level: config.level,
+      durationMinutes: config.durationMinutes,
+      language: config.language,
+      style: config.style,
+      teacherName: config.teacher.name,
+      studentProfile: user
+        ? {
+            name: user.name,
+            level: user.level,
+            style: config.style,
+          }
+        : undefined,
+    };
 
-      const data = await res.json();
-      if (data.lesson) {
-        // Save to study library automatically
-        try {
-          const rec: SavedLessonRecord = {
-            id: `less_${Date.now()}`,
-            topic: config.topic,
-            title: data.lesson.title || config.topic,
-            teacherName: config.teacher.name,
-            teacherAvatarUrl: config.teacher.imageUrl,
-            language: config.language,
-            level: config.level,
-            date: new Date().toLocaleDateString(),
-            lesson: data.lesson,
-            completed: false,
-          };
-          const existing = JSON.parse(
-            localStorage.getItem('kollektiva_saved_lessons_v1') || '[]'
-          );
-          localStorage.setItem(
-            'kollektiva_saved_lessons_v1',
-            JSON.stringify([rec, ...existing])
-          );
-        } catch (e) {
-          console.warn('Could not save lesson to library', e);
-        }
+    await streamLesson(
+      payload,
+      (updatedLesson) => {
+        setActiveLesson({ ...updatedLesson });
+      },
+      async (completedLesson) => {
+        if (completedLesson.curriculumModules.length > 0) {
+          if (user) {
+            await saveLesson(
+              {
+                topic: config.topic,
+                title: completedLesson.title || config.topic,
+                teacherName: config.teacher.name,
+                teacherAvatarUrl: config.teacher.imageUrl,
+                language: config.language,
+                level: config.level,
+                date: new Date().toLocaleDateString(),
+                lesson: completedLesson,
+                completed: false,
+              },
+              user.id
+            );
+          }
 
-        if (onStartLessonGlobal) {
-          onStartLessonGlobal(
-            data.lesson,
-            config.teacher,
-            config.language,
-            config.level,
-            config.format
-          );
-        } else {
-          setActiveLesson(data.lesson);
+          if (onStartLessonGlobal) {
+            onStartLessonGlobal(
+              completedLesson,
+              config.teacher,
+              config.language,
+              config.level,
+              config.format
+            );
+          } else {
+            setActiveLesson(completedLesson);
+          }
+          setIsSetupOpen(false);
         }
-        setIsSetupOpen(false);
+        setIsGenerating(false);
+      },
+      (error) => {
+        console.error('Lesson stream error:', error);
+        setIsGenerating(false);
       }
-    } catch (err) {
-      console.error('Failed to generate lesson:', err);
-    } finally {
-      setIsGenerating(false);
-    }
+    );
   };
 
   // Quick Start with auth check
@@ -214,7 +209,7 @@ export const Hero: React.FC<HeroProps> = ({ onStartLessonGlobal }) => {
           {/* Left — H1 (static, never changes) */}
           <div className="max-w-xl space-y-4">
             <h1 className="text-3xl font-normal leading-[1.1] tracking-tight text-white sm:text-5xl lg:text-7xl">
-              Kollektiva is the talent you build with each&nbsp;day
+              EchoMind is the talent you build with each&nbsp;day
             </h1>
 
             {/* AI Teacher Badge & Trigger */}

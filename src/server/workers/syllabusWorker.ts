@@ -17,7 +17,7 @@ export const syllabusWorker = new Worker(
     const ai = getGemini();
 
     if (ai) {
-      const prompt = `You are ${teacherName}, an elite AI academic dean at Kollektiva.
+      const prompt = `You are ${teacherName}, an elite AI academic dean at EchoMind.
 Generate a completely personalized, structured learning curriculum tailored for:
 - Learning Goal/Topic: "${subjectGoal}"
 - Learner Level: "${level}"

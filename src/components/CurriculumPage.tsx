@@ -102,7 +102,7 @@ export const CurriculumPage: React.FC<CurriculumPageProps> = ({ onStartLessonOnT
   };
 
   return (
-    <div className="min-h-screen kollektiva-page-bg text-white font-geist pt-24 pb-32 px-4 sm:px-6 lg:px-8 overflow-y-auto selection:bg-emerald-500 selection:text-black">
+    <div className="min-h-screen echomind-page-bg text-white font-geist pt-24 pb-32 px-4 sm:px-6 lg:px-8 overflow-y-auto selection:bg-emerald-500 selection:text-black">
       <div className="max-w-6xl mx-auto space-y-8">
         {/* Back Navigation Action */}
         {onBack && (
@@ -131,7 +131,7 @@ export const CurriculumPage: React.FC<CurriculumPageProps> = ({ onStartLessonOnT
               Personalized Syllabus Generator
             </h1>
             <p className="mt-2 text-sm text-white/70 max-w-2xl leading-relaxed">
-              Zero static presets. Kollektiva uses generative pedagogy to design an adaptive, multi-week learning plan calibrated to your specific objectives and language.
+              Zero static presets. EchoMind uses generative pedagogy to design an adaptive, multi-week learning plan calibrated to your specific objectives and language.
             </p>
           </div>
 
